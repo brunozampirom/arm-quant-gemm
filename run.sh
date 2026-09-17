@@ -66,18 +66,21 @@ sample_thermal() {
     done
 }
 
-echo
-echo "== sustained ${SUSTAIN_S}s, big cluster ($BIG_CLUSTER) =="
-adb shell "$DEV" --only neon_sdot_x4 --sustained "$SUSTAIN_S" --cpus "$BIG_CLUSTER" \
-    | tr -d '\r' > "$OUT/sustained_big.csv" &
-sample_thermal $! "$OUT/thermal_big.csv"
-wait
+sustained_run() {
+    label=$1
+    cpus=$2
+    echo
+    echo "== sustained ${SUSTAIN_S}s on cpus $cpus =="
+    adb shell "$DEV" --only neon_sdot_x4 --sustained "$SUSTAIN_S" --cpus "$cpus" \
+        | tr -d '\r' > "$OUT/sustained_$label.csv" &
+    sample_thermal $! "$OUT/thermal_$label.csv"
+    wait
+    tail -1 "$OUT/sustained_$label.csv"
+}
 
-echo "== sustained ${SUSTAIN_S}s, all cores ($ALL_CPUS) =="
-adb shell "$DEV" --only neon_sdot_x4 --sustained "$SUSTAIN_S" --cpus "$ALL_CPUS" \
-    | tr -d '\r' > "$OUT/sustained_all.csv" &
-sample_thermal $! "$OUT/thermal_all.csv"
-wait
+sustained_run single "$BIG"
+sustained_run big "$BIG_CLUSTER"
+sustained_run all "$ALL_CPUS"
 
 echo
 echo "results written to $OUT/"
