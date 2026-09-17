@@ -1,9 +1,10 @@
 #!/bin/sh
 # Builds the benchmark for arm64-v8a with the Android NDK.
 #
-# Only gemm_neon_sdot.c gets +dotprod. Building everything with it would let
-# the compiler use sdot inside the "baseline" kernel too, and the comparison
-# would be meaningless.
+# Only the sdot files get +dotprod. Building everything with it would let the
+# compiler use sdot inside the "baseline" kernels too, and the comparison would
+# be meaningless. gemm_quant.c is the quantized reference and gets the same
+# -fno-vectorize treatment as gemm_scalar.c, for the same reason.
 set -eu
 
 API=${API:-31}
@@ -52,11 +53,17 @@ DOT="-march=armv8.2-a+dotprod"
 "$CC" $COMMON $BASE -DGEMM_NAME=gemm_auto -c src/gemm_scalar.c -o "$OUT/gemm_auto.o"
 "$CC" $COMMON $BASE -c src/gemm_neon_smull.c -o "$OUT/gemm_neon_smull.o"
 "$CC" $COMMON $DOT  -c src/gemm_neon_sdot.c  -o "$OUT/gemm_neon_sdot.o"
+"$CC" $COMMON $BASE $NOVEC -c src/gemm_quant.c -o "$OUT/gemm_quant.o"
+"$CC" $COMMON $DOT  -c src/gemm_quant_neon.c -o "$OUT/gemm_quant_neon.o"
+"$CC" $COMMON $BASE -c src/quant.c            -o "$OUT/quant.o"
 "$CC" $COMMON $BASE -c src/measure.c          -o "$OUT/measure.o"
 "$CC" $COMMON $BASE -c src/sustained.c        -o "$OUT/sustained.o"
 "$CC" $COMMON $BASE -c src/main.c             -o "$OUT/main.o"
 
 "$CC" -static -pthread -o "$OUT/gemmbench" \
-    "$OUT/main.o" "$OUT/measure.o" "$OUT/sustained.o" "$OUT/gemm_scalar.o" "$OUT/gemm_auto.o" "$OUT/gemm_neon_smull.o" "$OUT/gemm_neon_sdot.o"
+    "$OUT/main.o" "$OUT/measure.o" "$OUT/sustained.o" "$OUT/quant.o" \
+    "$OUT/gemm_scalar.o" "$OUT/gemm_auto.o" \
+    "$OUT/gemm_neon_smull.o" "$OUT/gemm_neon_sdot.o" \
+    "$OUT/gemm_quant.o" "$OUT/gemm_quant_neon.o" -lm
 
 echo "built $OUT/gemmbench"

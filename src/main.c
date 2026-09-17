@@ -15,20 +15,26 @@
 #define HWCAP_ASIMDDP (1 << 20)
 #endif
 
+/// Exactly one of fn and qfn is set. The quantized kernels write int8 under
+/// the parameters in Quant, the others write int32 and stop there.
 typedef struct {
     const char *name;
     gemm_fn fn;
+    gemm_q_fn qfn;
     int needs_dotprod;
 } Kernel;
 
 static const Kernel kernels[] = {
-    {"scalar", gemm_scalar, 0},
-    {"auto_vec", gemm_auto, 0},
-    {"neon_smull", gemm_neon_smull, 0},
-    {"neon_smull_x4", gemm_neon_smull_x4, 0},
-    {"neon_sdot", gemm_neon_sdot, 1},
-    {"neon_sdot_x4", gemm_neon_sdot_x4, 1},
-    {"neon_sdot_m4", gemm_neon_sdot_m4, 1},
+    {"scalar", gemm_scalar, NULL, 0},
+    {"auto_vec", gemm_auto, NULL, 0},
+    {"neon_smull", gemm_neon_smull, NULL, 0},
+    {"neon_smull_x4", gemm_neon_smull_x4, NULL, 0},
+    {"neon_sdot", gemm_neon_sdot, NULL, 1},
+    {"neon_sdot_x4", gemm_neon_sdot_x4, NULL, 1},
+    {"neon_sdot_m4", gemm_neon_sdot_m4, NULL, 1},
+    {"q_scalar", NULL, gemm_q_scalar, 0},
+    {"q_sdot_m4_se", NULL, gemm_q_neon_sdot_m4_se, 1},
+    {"q_sdot_m4", NULL, gemm_q_neon_sdot_m4, 1},
 };
 static const int n_kernels = (int)(sizeof(kernels) / sizeof(kernels[0]));
 
@@ -67,7 +73,44 @@ static void fill(int8_t *p, size_t n, uint64_t seed) {
 typedef struct {
     int8_t *a, *b;
     int32_t *ref, *out;
+    /// int8 outputs, for the quantized kernels.
+    int8_t *qref, *qout;
+    int32_t *bias, *mult, *shift;
+    gemm_quant q;
 } Buffers;
+
+/// Builds quantization parameters the way an exported model would carry them:
+/// one multiplier and shift per output channel, an activation zero point
+/// folded into the bias, and an output zero point.
+///
+/// The scales are derived from the accumulators this data actually produces,
+/// targeting a little past full scale so a few outputs clamp. Parameters that
+/// never reach the clamp would leave that path untested, and parameters that
+/// clamp everything would make every kernel agree on a constant.
+static void build_quant(Buffers *bufs, const Opts *o) {
+    const int32_t a_zero_point = 7;
+
+    for (int n = 0; n < o->N; n++) bufs->bias[n] = (n % 17) - 8;
+    quant_fold_bias(bufs->bias, bufs->bias, bufs->b, o->N, o->K, a_zero_point);
+
+    for (int n = 0; n < o->N; n++) {
+        int32_t peak = 1;
+        for (int m = 0; m < o->M; m++) {
+            int32_t v = bufs->ref[(size_t)m * o->N + n] + bufs->bias[n];
+            if (v < 0) v = -v;
+            if (v > peak) peak = v;
+        }
+        quant_split_multiplier(140.0 / (double)peak, &bufs->mult[n],
+                               &bufs->shift[n]);
+    }
+
+    bufs->q.bias = bufs->bias;
+    bufs->q.multiplier = bufs->mult;
+    bufs->q.shift = bufs->shift;
+    bufs->q.output_zero_point = -3;
+    bufs->q.output_min = -128;
+    bufs->q.output_max = 127;
+}
 
 static int alloc_buffers(Buffers *bufs, const Opts *o) {
     size_t na = (size_t)o->M * o->K, nb = (size_t)o->N * o->K;
@@ -76,15 +119,41 @@ static int alloc_buffers(Buffers *bufs, const Opts *o) {
     bufs->b = malloc(nb);
     bufs->ref = malloc(nc * sizeof(int32_t));
     bufs->out = malloc(nc * sizeof(int32_t));
-    if (!bufs->a || !bufs->b || !bufs->ref || !bufs->out) return -1;
+    bufs->qref = malloc(nc);
+    bufs->qout = malloc(nc);
+    bufs->bias = malloc((size_t)o->N * sizeof(int32_t));
+    bufs->mult = malloc((size_t)o->N * sizeof(int32_t));
+    bufs->shift = malloc((size_t)o->N * sizeof(int32_t));
+    if (!bufs->a || !bufs->b || !bufs->ref || !bufs->out || !bufs->qref ||
+        !bufs->qout || !bufs->bias || !bufs->mult || !bufs->shift) {
+        return -1;
+    }
     fill(bufs->a, na, 1);
     fill(bufs->b, nb, 2);
     gemm_scalar(bufs->a, bufs->b, bufs->ref, o->M, o->N, o->K);
+    build_quant(bufs, o);
+    gemm_q_scalar(bufs->a, bufs->b, bufs->qref, o->M, o->N, o->K, &bufs->q);
     return 0;
+}
+
+static void free_buffers(Buffers *b) {
+    free(b->a); free(b->b); free(b->ref); free(b->out);
+    free(b->qref); free(b->qout);
+    free(b->bias); free(b->mult); free(b->shift);
+}
+
+static void invoke(const Kernel *kn, Buffers *b, const Opts *o) {
+    if (kn->qfn) kn->qfn(b->a, b->b, b->qout, o->M, o->N, o->K, &b->q);
+    else kn->fn(b->a, b->b, b->out, o->M, o->N, o->K);
 }
 
 static int correct(const Kernel *kn, Buffers *b, const Opts *o) {
     size_t nc = (size_t)o->M * o->N;
+    if (kn->qfn) {
+        memset(b->qout, 0, nc);
+        kn->qfn(b->a, b->b, b->qout, o->M, o->N, o->K, &b->q);
+        return memcmp(b->qref, b->qout, nc) == 0;
+    }
     memset(b->out, 0, nc * sizeof(int32_t));
     kn->fn(b->a, b->b, b->out, o->M, o->N, o->K);
     return memcmp(b->ref, b->out, nc * sizeof(int32_t)) == 0;
@@ -102,7 +171,7 @@ static void run_kernel(const Kernel *kn, Buffers *b, const Opts *o,
         return;
     }
 
-    for (int r = 0; r < 5; r++) kn->fn(b->a, b->b, b->out, o->M, o->N, o->K);
+    for (int r = 0; r < 5; r++) invoke(kn, b, o);
 
     Rep *reps = malloc((size_t)o->reps * sizeof(Rep));
     if (!reps) return;
@@ -110,7 +179,7 @@ static void run_kernel(const Kernel *kn, Buffers *b, const Opts *o,
     for (int r = 0; r < o->reps; r++) {
         reps[r].freq_before = freq_read(freq_fd);
         double w0 = now_wall(), c0 = now_cpu();
-        kn->fn(b->a, b->b, b->out, o->M, o->N, o->K);
+        invoke(kn, b, o);
         reps[r].wall = now_wall() - w0;
         reps[r].cpu = now_cpu() - c0;
         reps[r].freq_after = freq_read(freq_fd);
@@ -158,7 +227,7 @@ static void run_sustained(const Kernel *kn, Buffers *b, const Opts *o,
     int second = 0;
 
     while (now_wall() - start < (double)o->seconds) {
-        kn->fn(b->a, b->b, b->out, o->M, o->N, o->K);
+        invoke(kn, b, o);
         iters++;
 
         double elapsed = now_wall() - bucket_start;
@@ -239,7 +308,7 @@ int main(int argc, char **argv) {
                    ok ? "matches the reference" : "WRONG");
             if (!ok) bad = 1;
         }
-        free(bufs.a); free(bufs.b); free(bufs.ref); free(bufs.out);
+        free_buffers(&bufs);
         return bad;
     }
 
@@ -251,14 +320,25 @@ int main(int argc, char **argv) {
              t = strtok_r(NULL, ",", &save)) {
             cpus[n++] = atoi(t);
         }
-        const Kernel *kn = &kernels[n_kernels - 1];
+        const Kernel *kn = NULL;
         for (int i = 0; i < n_kernels; i++) {
-            if (o.only && !strcmp(o.only, kernels[i].name)) kn = &kernels[i];
+            const char *want = o.only ? o.only : "neon_sdot_m4";
+            if (!strcmp(want, kernels[i].name)) kn = &kernels[i];
+        }
+        // The multi-core path shares one output buffer between threads, which
+        // is fine for a throughput measurement and wrong for a quantized
+        // kernel's int8 output only in the same harmless way. What it cannot
+        // do is call a null pointer, so say so instead.
+        if (!kn || !kn->fn) {
+            fprintf(stderr, "error: --cpus needs an int32 output kernel\n");
+            free(spec);
+            free_buffers(&bufs);
+            return 2;
         }
         int rc = run_sustained_mt(kn->fn, bufs.a, bufs.b, o.M, o.N, o.K,
                                   cpus, n, o.seconds);
         free(spec);
-        free(bufs.a); free(bufs.b); free(bufs.ref); free(bufs.out);
+        free_buffers(&bufs);
         return rc == 0 ? 0 : 1;
     }
 
@@ -274,6 +354,6 @@ int main(int argc, char **argv) {
     }
 
     if (freq_fd >= 0) close(freq_fd);
-    free(bufs.a); free(bufs.b); free(bufs.ref); free(bufs.out);
+    free_buffers(&bufs);
     return 0;
 }
