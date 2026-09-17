@@ -1,8 +1,9 @@
 # arm-quant-gemm
 
-Int8 matrix multiply on a phone, seven ways, measured properly.
+Int8 matrix multiply on a phone, seven ways, plus what it costs to hand the
+answer back as int8. Measured properly.
 
-Three things it found. The first is that hand-written NEON can be slower than
+Four things it found. The first is that hand-written NEON can be slower than
 plain C:
 
 ```
@@ -38,6 +39,18 @@ The third is that a burst measurement overstates what the phone sustains, by
   steady state         149.8 GOP/s     reached after 81s
 ```
 
+The fourth is that requantizing the accumulator back to int8, which every real
+quantized layer has to do, is a fixed cost per output. What it costs you is
+therefore a question about K and nothing else:
+
+```
+Cortex-A78, neon_sdot_m4, int32 accumulator against int8 output
+  K=1024   109.49 -> 95.87 GOP/s    -12%
+  K=32      54.09 -> 29.38 GOP/s    -46%
+```
+
+A benchmark that stops at int32 quotes a number no quantized model ever sees.
+
 ## Results
 
 Galaxy A14 5G, Exynos 1330, Android 15, six Cortex-A55 plus two Cortex-A78.
@@ -54,6 +67,10 @@ repetitions, device unplugged from USB. Produced by `run.sh`, raw output in
 | `neon_sdot` | 8.04 | 44.02 | ARMv8.2 dot product, one accumulator |
 | `neon_sdot_x4` | 8.94 | 76.31 | dot product, four accumulators |
 | `neon_sdot_m4` | **15.53** | **111.68** | four rows of A share each B load |
+
+Every row above writes int32. What it costs to finish the job and write int8 is
+its own measurement with its own conditions, in [What requantization
+costs](#what-requantization-costs).
 
 ## What the numbers say
 
@@ -163,6 +180,88 @@ and not the rest. That one is still open.
 These ceilings apply only to the `sdot` kernels. Applying them to the `smull`
 kernels would be wrong, since they issue a different instruction with different
 throughput.
+
+## What requantization costs
+
+Every kernel above stops at int32. That is the arithmetic core of a quantized
+layer and not the whole operator: the next layer wants int8 back, and getting
+there is a fixed point multiply, a rounding shift, a zero point and a
+saturating narrow, per output element. `q_sdot_m4` is the same matmul with that
+epilogue fused, and `q_sdot_m4_se` is the same again with the epilogue left
+scalar.
+
+Cortex-A78 at 2400 MHz, M=N=64, one core, unplugged. Raw output in
+[results/requant_a78.csv](results/requant_a78.csv).
+
+This sweep uses far more repetitions than the table above, because a single
+fast kernel run on its own finishes in a few milliseconds and the governor
+never leaves its idle frequency: at 50 repetitions the filters reject 47 of
+them as downclocked and there is no result at all. The repetition count is
+scaled by K so every column does comparable work. It is a separate run, so the
+K=1024 baseline here reads 109.49 against the 111.68 above, which is the run to
+run spread the rest of this README warns about.
+
+| K | int32 out | int8, vector epilogue | int8, scalar epilogue |
+|---|---|---|---|
+| 1024 | 109.49 | 95.87 (**-12%**) | 88.88 (-19%) |
+| 512 | 109.16 | 85.66 (-22%) | 74.80 (-31%) |
+| 256 | 102.50 | 68.33 (-33%) | 54.42 (-47%) |
+| 128 | 92.73 | 59.14 (-36%) | 38.34 (-59%) |
+| 64 | 74.49 | 42.60 (-43%) | 22.87 (-69%) |
+| 32 | 54.09 | 29.38 (**-46%**) | 12.88 (-76%) |
+
+**The epilogue is a fixed cost per output, so what it costs you is entirely a
+question of K.** Differencing the two times puts the scalar epilogue at 3.8 to
+4.4 ns per output across the whole sweep, a 32x range of K. The matmul feeding
+it grows with K and the epilogue does not, so the same work is 12% of
+throughput at K=1024 and 46% at K=32.
+
+A benchmark that stops at int32 quotes the left column for a model that only
+ever sees one of the others.
+
+**Vectorizing the epilogue is worth more the smaller K gets**, for the same
+reason: 1.6x at K=1024 against 3.8x at K=32, because what it saves is fixed
+while what it is measured against shrinks.
+
+The fixed cost model is exact on the little core and only roughly true on the
+big one:
+
+| | scalar epilogue, ns per output | vector |
+|---|---|---|
+| A55, in-order | 18.5 to 19.6 | 3.9 to 5.1 |
+| A78, out-of-order | 3.8 to 4.4 | 1.0 to 2.7 |
+
+The A55 numbers barely move and vectorizing buys 4.1x, which is the lane count.
+On the A78 the vector epilogue's apparent cost more than halves between K=1024
+and K=32, and a fixed cost cannot do that. The subtraction is what breaks, not
+the kernel: an out-of-order core overlaps the epilogue with the matmul ahead of
+it, so the two times do not simply add. Where they do add, in order, the model
+holds.
+
+One result that reads backwards. Quantizing costs *less* on the slower core at
+large K: 3.7% on the A55 against 12.4% on the A78 at K=1024. The A55 epilogue is
+about five times more expensive in absolute terms, its matmul is seven times
+slower, and only the ratio reaches the output.
+
+## Correctness of the epilogue
+
+The requantization follows TFLite's convention, which is what an exported int8
+model carries: weights per output channel and symmetric, activations per tensor
+with a zero point, and the scale as a Q31 multiplier plus a shift so the whole
+epilogue stays in integer arithmetic.
+
+The activation zero point never appears in the inner loop, because it does not
+have to. `sum((a - za) * w)` is `sum(a * w)` minus `za * sum(w)`, and the second
+term depends only on the weights, so it is a per channel constant folded into
+the bias once. Leaving the zero point out of a benchmark would not make the
+benchmark faster, only less like the thing it claims to measure.
+
+One instruction is not the translation it looks like. `vrshlq_s32` rounds a tie
+up and gemmlowp's `RoundingDivideByPOT` rounds it away from zero, so they
+disagree on exactly the negative values landing on one. Removing the fixup that
+reconciles them makes `q_sdot_m4` disagree with the scalar reference on this
+benchmark's own data while `q_sdot_m4_se` stays correct, which is how it was
+found and what says the check is worth having.
 
 ## Sustained load is a different question
 
@@ -291,10 +390,13 @@ comparison would mean nothing.
 
 ## Correctness
 
-Every kernel is checked against the scalar reference before it is timed, and one
-that disagrees is reported instead of measured. CI cross-compiles for aarch64
-and runs those checks under qemu, including K=253 so the tail paths past the 16,
-32 and 64 byte loop bodies are exercised.
+Every kernel is checked before it is timed and one that disagrees is reported
+instead of measured. There are two references, both built with the vectorizer
+off: `gemm_scalar` for the kernels that write int32 and `gemm_q_scalar` for the
+ones that write int8. CI cross-compiles for aarch64 and runs the checks under
+qemu, including K=253 so the tail paths past the 16, 32 and 64 byte loop bodies
+are exercised, and asserts on the emitted code that neither reference contains a
+vector instruction.
 
 CI deliberately publishes no timings. A timing under emulation is a timing of
 the emulator.
@@ -313,6 +415,12 @@ the whole of it. Nothing blocks N or K, nothing packs either operand, and
 nothing tiles for a cache level. A real inference kernel does all of those, so
 the 72.7% of peak below is not a claim about how close this is to a production
 GEMM.
+
+**One quantization scheme.** Per output channel weights, per tensor activations
+with a zero point, int8 in and int8 out, which is what TFLite exports. No per
+tensor weight variant, and the output clamp is the full int8 range rather than a
+fused ReLU, so nothing here measures what folding an activation into the
+epilogue would save.
 
 **B is stored transposed** as N rows of K, so every kernel walks both operands
 contiguously. Comparing kernels that disagree about layout would measure the
