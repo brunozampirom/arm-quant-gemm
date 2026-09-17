@@ -83,4 +83,7 @@ sustained_run big "$BIG_CLUSTER"
 sustained_run all "$ALL_CPUS"
 
 echo
+echo "== sustained summary =="
+sh analyze.sh "$OUT"/sustained_*.csv
+
 echo "results written to $OUT/"

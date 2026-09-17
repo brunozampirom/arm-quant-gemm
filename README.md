@@ -14,13 +14,13 @@ Cortex-A55 (in-order little core)
 The intrinsics are not wrong. They use one accumulator, so every iteration waits
 on the one before it. The compiler used eight and did not wait.
 
-The second is that on this device, loading all eight cores buys almost nothing
-once the heat settles:
+The second is that a burst measurement overstates what the phone sustains, by
+29% with all eight cores loaded:
 
 ```
-sustained 300s, after thermals stabilise
-  2 cores    113.0 GOP/s
-  8 cores    123.3 GOP/s     9% more, for 4x the cores
+8 cores, 300s under load
+  best single second   193.4 GOP/s
+  steady state         149.8 GOP/s     reached after 81s
 ```
 
 ## Results
@@ -75,22 +75,46 @@ and skipped rather than crashing on a core without it.
 
 A burst of 50 repetitions on one core says 77.45 GOP/s, and that is true. It is
 also not what the phone delivers. Each row below is 300 seconds of continuous
-work, unplugged:
+work, unplugged, summarised by `analyze.sh`:
 
-| load | first 5s | last 5s | change | A78 clock | Android thermal status |
-|---|---|---|---|---|---|
-| 1 core | 75.6 | 76.3 | +1.0% | 2016 to 2400 MHz | 0, never throttled |
-| 2 cores | 135.7 | 113.0 | **-16.7%** | 672 to 2400 MHz | 1 |
-| 8 cores | 166.3 | 123.3 | **-25.9%** | 533 to 2400 MHz | 2 |
+| load | behaviour | sustained | best single second | thermal status |
+|---|---|---|---|---|
+| 1 core | settles at 2400 MHz in 1s | 76.5 | 76.5 (1.00x) | 0, never throttled |
+| 2 cores | never settles | 113.4 late, drifting -12.6% | 143.4 (1.26x) | 1 |
+| 8 cores | settles in 81s at 1920/1536 MHz | 149.8 | 193.4 (1.29x) | 2 |
 
-One core runs flat forever on this device. Two cores lose a sixth of their
-throughput in five minutes. Eight cores start 23% ahead of two and end 9%
-ahead, having spent four times the cores and the battery to get there.
+The three rows are three different behaviours, not three points on one curve.
+
+**One core runs flat forever.** It holds 2400 MHz for the whole five minutes and
+Android never reports throttling. Anything that fits on one core is not a
+thermal problem on this device.
+
+**Two cores never reach a steady state.** The governor hunts between 1824 and
+2112 MHz for the entire run, and throughput drifts down 12.6% from the first
+hundred seconds to the last without ever settling. Quoting a single number for
+this case would be inventing one.
+
+**Eight cores settle, and settle low.** After 81 seconds the clocks pin at 1920
+MHz on the A55s and 1536 MHz on the A78s, which is 64% of the A78 peak, and
+throughput sits at 149.8 GOP/s with a p5 to p95 band of 144.6 to 150.3. From
+there it does not move.
+
+Picking the window changes the answer here, which is why `analyze.sh` looks for
+the DVFS operating point the run actually converges to rather than comparing the
+first seconds against the last. An earlier draft of this README did compare the
+ends, and reported a 25.9% drop for the eight core case that was an artefact of
+catching the tail during a one second dip.
+
+Those dips are real and are left in the raw data. Sustained mode reports
+throughput per second with no filtering, so a second where Android decided to do
+something else shows up as a 56 GOP/s sample. The burst mode filters described
+below do not apply here on purpose: this measurement is meant to include the
+phone being a phone.
 
 The throttling level comes from Android's `thermalservice` rather than from a
 temperature reading. The thermal zones under `/sys/class/thermal` are root-only
 on a retail phone, and battery temperature lags the SoC badly: it moved 2.9 C
-across all of this while the A78 clock was being cut by more than half.
+across all of this while the A78 clock was being cut by more than a third.
 
 ## How it is measured
 
