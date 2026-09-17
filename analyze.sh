@@ -11,6 +11,12 @@
 # do, say so and report the drift instead of inventing a steady number.
 set -eu
 
+# awk decides whether a field is a number using the locale's decimal separator.
+# Under a comma locale "193.4" stops looking numeric, comparisons fall back to
+# string order, and the maximum of 193.4 and 99.0 comes out as 99.0. The whole
+# summary then reads plausibly and is wrong, so pin the numeric locale.
+export LC_ALL=C
+
 # Below this share of samples at the modal operating point, the run is treated
 # as never having settled.
 SETTLED_SHARE=${SETTLED_SHARE:-50}

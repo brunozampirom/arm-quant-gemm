@@ -5,6 +5,12 @@
 # be reproduced by running this, it does not belong there.
 set -eu
 
+# awk decides whether a field is a number using the locale's decimal separator.
+# Under a comma locale "193.4" stops looking numeric, comparisons fall back to
+# string order, and the maximum of 193.4 and 99.0 comes out as 99.0. The whole
+# summary then reads plausibly and is wrong, so pin the numeric locale.
+export LC_ALL=C
+
 # Git Bash rewrites /data/... into a Windows path before adb ever sees it.
 export MSYS_NO_PATHCONV=1
 
