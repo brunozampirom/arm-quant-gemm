@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Correctness travels; performance does not. CI cross-compiles for aarch64
+  # and checks every kernel against the scalar reference under emulation. The
+  # numbers in the README come from a real phone and cannot come from here,
+  # because a qemu timing is a timing of qemu.
+  correctness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cross toolchain and emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+
+      - name: Build for aarch64
+        env:
+          CC: aarch64-linux-gnu-gcc
+        run: sh build.sh
+
+      # QEMU_CPU=max turns on the ARMv8.2 dot product extension, so the sdot
+      # kernels are checked rather than skipped.
+      - name: Check every kernel against the reference
+        env:
+          QEMU_CPU: max
+        run: qemu-aarch64-static build/gemmbench --check
+
+      - name: Check a non-multiple-of-64 K exercises the tail paths
+        env:
+          QEMU_CPU: max
+        run: qemu-aarch64-static build/gemmbench --check -M 7 -N 5 -K 253
