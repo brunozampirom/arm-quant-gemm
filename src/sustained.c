@@ -1,10 +1,12 @@
 #define _GNU_SOURCE
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gemm.h"
 #include "measure.h"
@@ -55,10 +57,11 @@ int run_sustained_mt(gemm_fn fn, const int8_t *a, const int8_t *b,
         atomic_init(&ws[i].stop, 0);
     }
 
-    int freq_fd = freq_open(cpus[0]);
+    int freq_lo = freq_open(cpus[0]);
+    int freq_hi = freq_open(cpus[n_cpus - 1]);
     double ops_per_iter = 2.0 * (double)M * (double)N * (double)K;
 
-    printf("second,gops_total,freq_khz\n");
+    printf("second,gops_total,freq_first_khz,freq_last_khz\n");
     fflush(stdout);
 
     for (int i = 0; i < n_cpus; i++) {
@@ -68,8 +71,12 @@ int run_sustained_mt(gemm_fn fn, const int8_t *a, const int8_t *b,
     long last_total = 0;
     double bucket = now_wall();
     for (int s = 0; s < seconds; s++) {
-        double target = bucket + 1.0;
-        while (now_wall() < target) { /* spin on the clock, not on sleep */ }
+        // Sleep rather than spin. Spinning here would put a ninth runnable
+        // thread on an eight core device and steal time from the workers,
+        // which is exactly the thing this run is supposed to measure. The
+        // bucket length is measured afterwards, so sleep jitter costs nothing.
+        struct timespec iv = {1, 0};
+        while (nanosleep(&iv, &iv) == -1 && errno == EINTR) { }
 
         long total = 0;
         for (int i = 0; i < n_cpus; i++) {
@@ -77,7 +84,8 @@ int run_sustained_mt(gemm_fn fn, const int8_t *a, const int8_t *b,
         }
         double elapsed = now_wall() - bucket;
         double gops = ops_per_iter * (double)(total - last_total) / elapsed * 1e-9;
-        printf("%d,%.2f,%ld\n", s, gops, freq_read(freq_fd));
+        printf("%d,%.2f,%ld,%ld\n", s, gops, freq_read(freq_lo),
+               freq_read(freq_hi));
         fflush(stdout);
         last_total = total;
         bucket = now_wall();

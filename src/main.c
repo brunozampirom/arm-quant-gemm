@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
     if (!o.csv) {
         printf("M=%d N=%d K=%d reps=%d cpu=%d dotprod=%s peak=%ld kHz\n",
                o.M, o.N, o.K, o.reps, o.cpu, have_dotprod ? "yes" : "no", peak);
-        if (o.cpu < 0) {
+        if (o.cpu < 0 && !o.cpus) {
             printf("warning: not pinned; the scheduler may move this between "
                    "core types mid-run\n");
         }
