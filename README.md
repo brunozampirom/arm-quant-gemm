@@ -60,16 +60,74 @@ opposite of the intuition that in-order cores need the hand-holding:
 | A55 `sdot` | 8.03 | 9.31 | 1.16x |
 | A78 `sdot` | 43.93 | 77.45 | 1.76x |
 
-The likely reason is that the payoff tracks each core's `sdot` latency to
-throughput ratio rather than its issue order. The A78 retires enough dot
-products per cycle that a single accumulator leaves it waiting on that
-accumulator, while the A55's narrower NEON unit is nearer throughput-bound
-already. That explanation is inferred from these measurements, not verified
-against vendor pipeline documentation.
+Arm's optimization guides say why, and the reason is not issue order. Both
+cores forward an accumulator between consecutive dot products at a latency of
+one cycle. What differs is how many dot products each can start per cycle:
+
+| | `SDOT` throughput, Q-form | accumulate latency | one chain saturates it? |
+|---|---|---|---|
+| A55 | 1 per cycle | 1 cycle | **yes** |
+| A78 | 2 per cycle | 1 cycle | no, it fills half |
+
+One accumulator issues at most one dot product per cycle, because the next one
+waits a cycle for the forwarded accumulator. On the A55 that already matches
+what the core can start, so a second chain has nowhere to go and the gain is
+1.16x. On the A78 it leaves half the machine idle, and independent chains
+collect the rest: 1.76x measured against 2x available.
+
+The A55 number carries a footnote that is easy to miss. Its table lists a
+throughput of 2, but note 1 says the Q-form, which is the 128-bit form these
+kernels use, "can only be dual issued as instruction 0 and execution throughput
+is 1". Reading the headline number would have predicted a gain that is not
+there.
+
+Sources: [Cortex-A78 Software Optimization
+Guide](https://developer.arm.com/documentation/102160/latest/) r1p2 issue 5.0,
+`ASIMD dot product` on page 34 and the accumulator forwarding note on page 19;
+[Cortex-A55 Software Optimization
+Guide](https://documentation-service.arm.com/static/6385cb83ff39817c1136abd8)
+r2p0 issue 4.0, page 35.
 
 **`sdot` earns its keep.** Over the four-accumulator `smull` kernel it is 1.62x
 on the A55 and 2.38x on the A78. It is detected at runtime through `AT_HWCAP`,
 and skipped rather than crashing on a core without it.
+
+## How much of the core is that
+
+Being 3.7x faster than the compiler says nothing about how much of the silicon
+is left unused. The dot product throughput above gives a ceiling to measure
+against.
+
+A `SDOT Vd.4S, Vn.16B, Vm.16B` performs 4 lanes of 4 int8 multiply-accumulates,
+so 16 MACs, counted here as 32 operations to match the `2 * M * N * K` the
+benchmark reports. Peak is then throughput times 32 times the clock, and the
+clock is not the nominal one: every repetition that ran below the cluster's
+peak is discarded before the median, so the surviving repetitions ran at the
+frequency in the results header.
+
+| | peak | `neon_sdot` | `neon_sdot_x4` |
+|---|---|---|---|
+| A55 at 2002 MHz | 64.1 GOP/s | 8.03, **12.5%** | 9.31, **14.5%** |
+| A78 at 2400 MHz | 153.6 GOP/s | 43.93, **28.6%** | 77.45, **50.4%** |
+
+The A78 number is the interesting one. Four accumulators land it at almost
+exactly half of peak, which is what one dot product per cycle looks like on a
+core that can start two.
+
+So the accumulators did their job and something else became the limit.
+**Hypothesis, not measured:** operand delivery. Each `SDOT` reads 32 bytes, so
+two per cycle wants 64 bytes per cycle of loads, and these kernels stream both
+operands with no reuse between them. That is the same gap the Scope section
+below describes as missing blocking, now with a number attached to it rather
+than a caveat.
+
+The A55 at 14.5% is a much wider gap and this ceiling does not explain it. An
+in-order core cannot reorder around a load that misses, and nothing here was
+written to help it.
+
+This ceiling applies only to the two `sdot` kernels. Applying it to the `smull`
+kernels would be wrong, since they issue a different instruction with different
+throughput.
 
 ## Sustained load is a different question
 
