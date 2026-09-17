@@ -52,3 +52,18 @@ jobs:
         env:
           QEMU_CPU: max
         run: qemu-aarch64-static build/gemmbench --check -M 7 -N 5 -K 253
+
+      # A summary that changes with the operator's locale is worse than no
+      # summary, because it still looks right. awk decides whether a field is
+      # numeric using the locale's decimal separator, so under a comma locale
+      # the comparisons fall back to string order. Assert the property instead
+      # of trusting that the LC_ALL pin stays where it is.
+      - name: Assert the analysis does not depend on the locale
+        run: |
+          set -eu
+          sudo locale-gen pt_BR.UTF-8 > /dev/null
+          for f in results/sustained_*.csv; do
+            LC_ALL=C           sh analyze.sh "$f" > /tmp/c.txt
+            LC_ALL=pt_BR.UTF-8 sh analyze.sh "$f" > /tmp/br.txt
+            diff /tmp/c.txt /tmp/br.txt || { echo "error: $f summarises differently under a comma locale"; exit 1; }
+          done
