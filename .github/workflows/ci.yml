@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A rebase merge rewrites the commits, so the SHA that lands on main is not
+  # one any pull_request run ever saw and no push run fires for it either.
+  # Without this there is no way to ask for a run on what main actually holds.
+  workflow_dispatch:
 
 jobs:
   # Correctness travels; performance does not. CI cross-compiles for aarch64
