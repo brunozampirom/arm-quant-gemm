@@ -28,6 +28,7 @@ static const Kernel kernels[] = {
     {"neon_smull_x4", gemm_neon_smull_x4, 0},
     {"neon_sdot", gemm_neon_sdot, 1},
     {"neon_sdot_x4", gemm_neon_sdot_x4, 1},
+    {"neon_sdot_m4", gemm_neon_sdot_m4, 1},
 };
 static const int n_kernels = (int)(sizeof(kernels) / sizeof(kernels[0]));
 

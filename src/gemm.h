@@ -32,4 +32,9 @@ void gemm_neon_smull_x4(const int8_t *a, const int8_t *b, int32_t *c,
 void gemm_neon_sdot_x4(const int8_t *a, const int8_t *b, int32_t *c,
                        int M, int N, int K);
 
+/// Blocks M by four so each B load feeds four sdots, testing whether the x4
+/// kernel is limited by operand delivery rather than by the dot product unit.
+void gemm_neon_sdot_m4(const int8_t *a, const int8_t *b, int32_t *c,
+                       int M, int N, int K);
+
 #endif

@@ -1,20 +1,35 @@
 # arm-quant-gemm
 
-Int8 matrix multiply on a phone, six ways, measured properly.
+Int8 matrix multiply on a phone, seven ways, measured properly.
 
-Two things it found. The first is that hand-written NEON can be slower than
+Three things it found. The first is that hand-written NEON can be slower than
 plain C:
 
 ```
 Cortex-A55 (in-order little core)
-  auto_vec        5.62 GOP/s     plain C, compiler auto-vectorized
-  neon_smull      4.78 GOP/s     hand-written NEON intrinsics
+  auto_vec        4.79 GOP/s     plain C, compiler auto-vectorized
+  neon_smull      4.76 GOP/s     hand-written NEON intrinsics
 ```
 
 The intrinsics are not wrong. They use one accumulator, so every iteration waits
 on the one before it. The compiler used eight and did not wait.
 
-The second is that a burst measurement overstates what the phone sustains, by
+The second is that fixing that is not where most of the performance was. Four
+accumulators take the A78 from 44.02 to 76.31 GOP/s, and then loading each byte
+once and using it four times takes it to 111.68, on the same instruction:
+
+```
+Cortex-A78, same sdot arithmetic throughout
+  neon_sdot       44.02 GOP/s   one accumulator
+  neon_sdot_x4    76.31 GOP/s   four accumulators          1.73x
+  neon_sdot_m4   111.68 GOP/s   four rows share each load  1.46x more
+```
+
+The kernel was never short of arithmetic. It was short of operands, and the
+measurement that shows it is in [How much of the core is
+that](#how-much-of-the-core-is-that).
+
+The third is that a burst measurement overstates what the phone sustains, by
 29% with all eight cores loaded:
 
 ```
@@ -32,19 +47,20 @@ repetitions, device unplugged from USB. Produced by `run.sh`, raw output in
 
 | kernel | A55 GOP/s | A78 GOP/s | what it is |
 |---|---|---|---|
-| `scalar` | 0.79 | 4.01 | C, vectorizer off |
-| `auto_vec` | 5.62 | 20.95 | same C, vectorizer on |
-| `neon_smull` | 4.78 | 29.63 | intrinsics, one accumulator |
-| `neon_smull_x4` | 5.76 | 32.51 | intrinsics, four accumulators |
-| `neon_sdot` | 8.03 | 43.93 | ARMv8.2 dot product, one accumulator |
-| `neon_sdot_x4` | **9.31** | **77.45** | dot product, four accumulators |
+| `scalar` | 0.79 | 3.92 | C, vectorizer off |
+| `auto_vec` | 4.79 | 18.55 | same C, vectorizer on |
+| `neon_smull` | 4.76 | 29.60 | intrinsics, one accumulator |
+| `neon_smull_x4` | 5.50 | 32.39 | intrinsics, four accumulators |
+| `neon_sdot` | 8.04 | 44.02 | ARMv8.2 dot product, one accumulator |
+| `neon_sdot_x4` | 8.94 | 76.31 | dot product, four accumulators |
+| `neon_sdot_m4` | **15.53** | **111.68** | four rows of A share each B load |
 
 ## What the numbers say
 
-**Against the right baseline the win is 3.7x, not 19x.** `neon_sdot_x4` is 19.3x
-faster than scalar C on the A78. That figure is close to meaningless, because
-nobody ships scalar C: the compiler vectorizes it for you. Against what you
-actually get for free it is 3.7x. A benchmark quoting the first number is
+**Against the right baseline the win is 6.0x, not 28.5x.** `neon_sdot_m4` is
+28.5x faster than scalar C on the A78. That figure is close to meaningless,
+because nobody ships scalar C: the compiler vectorizes it for you. Against what
+you actually get for free it is 6.0x. A benchmark quoting the first number is
 comparing against code no one would have written.
 
 This is why `scalar` and `auto_vec` are one source file compiled twice, once
@@ -57,8 +73,8 @@ opposite of the intuition that in-order cores need the hand-holding:
 
 | | one accumulator | four | gain |
 |---|---|---|---|
-| A55 `sdot` | 8.03 | 9.31 | 1.16x |
-| A78 `sdot` | 43.93 | 77.45 | 1.76x |
+| A55 `sdot` | 8.04 | 8.94 | 1.11x |
+| A78 `sdot` | 44.02 | 76.31 | 1.73x |
 
 Arm's optimization guides say why, and the reason is not issue order. Both
 cores forward an accumulator between consecutive dot products at a latency of
@@ -88,13 +104,13 @@ Guide](https://developer.arm.com/documentation/102160/latest/) r1p2 issue 5.0,
 Guide](https://documentation-service.arm.com/static/6385cb83ff39817c1136abd8)
 r2p0 issue 4.0, page 35.
 
-**`sdot` earns its keep.** Over the four-accumulator `smull` kernel it is 1.62x
-on the A55 and 2.38x on the A78. It is detected at runtime through `AT_HWCAP`,
+**`sdot` earns its keep.** Over the four-accumulator `smull` kernel it is 1.63x
+on the A55 and 2.36x on the A78. It is detected at runtime through `AT_HWCAP`,
 and skipped rather than crashing on a core without it.
 
 ## How much of the core is that
 
-Being 3.7x faster than the compiler says nothing about how much of the silicon
+Being 6.0x faster than the compiler says nothing about how much of the silicon
 is left unused. The dot product throughput above gives a ceiling to measure
 against.
 
@@ -105,33 +121,52 @@ clock is not the nominal one: every repetition that ran below the cluster's
 peak is discarded before the median, so the surviving repetitions ran at the
 frequency in the results header.
 
-| | peak | `neon_sdot` | `neon_sdot_x4` |
+| | peak | `neon_sdot` | `neon_sdot_x4` | `neon_sdot_m4` |
+|---|---|---|---|---|
+| A55 at 2002 MHz | 64.1 GOP/s | 8.04, 12.5% | 8.94, 14.0% | 15.53, **24.2%** |
+| A78 at 2400 MHz | 153.6 GOP/s | 44.02, 28.7% | 76.31, 49.7% | 111.68, **72.7%** |
+
+Four accumulators land the A78 at almost exactly half of peak, which is what one
+dot product per cycle looks like on a core that can start two. So the
+accumulators did their job and something else became the limit.
+
+It was operand delivery, and `neon_sdot_m4` is the experiment that shows it. It
+runs four rows of A against one vector of B, so each B load feeds four dot
+products instead of one. Same instruction, same arithmetic, same accumulator
+count. Counted in the emitted inner loop, the ratio goes from 2.00 loads per
+`sdot` to 1.25, and throughput goes up 1.46x on the A78 and 1.74x on the A55.
+
+The quantity that stays put is not dot products per cycle, it is bytes per
+cycle:
+
+| | loads per `sdot` | `sdot` per cycle | bytes per cycle |
 |---|---|---|---|
-| A55 at 2002 MHz | 64.1 GOP/s | 8.03, **12.5%** | 9.31, **14.5%** |
-| A78 at 2400 MHz | 153.6 GOP/s | 43.93, **28.6%** | 77.45, **50.4%** |
+| A55 `neon_sdot_x4` | 2.00 | 0.140 | 4.5 |
+| A55 `neon_sdot_m4` | 1.25 | 0.244 | 4.9 |
+| A78 `neon_sdot_x4` | 2.00 | 0.994 | 31.8 |
+| A78 `neon_sdot_m4` | 1.25 | 1.456 | 29.1 |
 
-The A78 number is the interesting one. Four accumulators land it at almost
-exactly half of peak, which is what one dot product per cycle looks like on a
-core that can start two.
+Each core holds a roughly constant load bandwidth across both kernels, and the
+throughput falls out of how many dot products you get per byte. The A78's 30ish
+bytes per cycle is two 16-byte loads, even though its table lists three load
+pipes and a vector load throughput of 3. Issue slots were never the binding
+constraint; delivered bytes were.
 
-So the accumulators did their job and something else became the limit.
-**Hypothesis, not measured:** operand delivery. Each `SDOT` reads 32 bytes, so
-two per cycle wants 64 bytes per cycle of loads, and these kernels stream both
-operands with no reuse between them. That is the same gap the Scope section
-below describes as missing blocking, now with a number attached to it rather
-than a caveat.
+This is also why the two cores gain differently from the same change. The A78's
+bandwidth dipped slightly between the two kernels and it gained 1.46x, less than
+the 1.60x the load ratio alone would predict. The A55's rose slightly and it
+gained 1.74x, more.
 
-The A55 at 14.5% is a much wider gap and this ceiling does not explain it. An
-in-order core cannot reorder around a load that misses, and nothing here was
-written to help it.
+The A55 remains at 24.2% of its own peak, so the blocking closed part of its gap
+and not the rest. That one is still open.
 
-This ceiling applies only to the two `sdot` kernels. Applying it to the `smull`
+These ceilings apply only to the `sdot` kernels. Applying them to the `smull`
 kernels would be wrong, since they issue a different instruction with different
 throughput.
 
 ## Sustained load is a different question
 
-A burst of 50 repetitions on one core says 77.45 GOP/s, and that is true. It is
+A burst of 50 repetitions on one core says 111.68 GOP/s, and that is true. It is
 also not what the phone delivers. Each row below is 300 seconds of continuous
 work, unplugged, summarised by `analyze.sh`:
 
@@ -208,8 +243,8 @@ out.
 The output says how many survived and why the rest did not:
 
 ```
-neon_sdot_x4   median   0.108 ms  p10   0.108  p90   0.108   77.45 GOP/s  spread  0.2%  kept 49/50  (preempt 1, dvfs 0, slow 0)
-scalar         median   2.094 ms  p10   2.081  p90   2.101    4.01 GOP/s  spread  1.0%  kept 26/50  (preempt 0, dvfs 11, slow 13)
+neon_sdot_m4   median   0.075 ms  p10   0.075  p90   0.075  111.68 GOP/s  spread  1.2%  kept 49/50  (preempt 1, dvfs 0, slow 0)
+scalar         median   2.139 ms  p10   2.133  p90   2.147    3.92 GOP/s  spread  0.6%  kept 27/50  (preempt 1, dvfs 9, slow 13)
 ```
 
 That second line is the point. Half the scalar repetitions ran at the wrong
@@ -226,7 +261,7 @@ phone the tail is thermal and scheduling noise, and a mean folds it into the
 answer.
 
 Run to run, the numbers here move by up to 4%. Two independent full runs of
-`run.sh` put A78 `neon_sdot_x4` at 74.77 and 77.45 GOP/s. Treat the ratios
+`run.sh` put A78 `neon_sdot_x4` at 76.31 and 76.34 GOP/s. Treat the ratios
 between kernels as the result, not the third digit.
 
 ## Reproducing
@@ -273,10 +308,11 @@ about ARM in general.
 **No i8mm.** This SoC reports `asimddp` but not `i8mm`, so the 8-bit matrix
 multiply path is absent rather than untested.
 
-**Nothing is tiled or blocked.** These kernels stream both operands and stay in
-cache at these sizes, so they measure arithmetic rather than the memory
-hierarchy. A real inference kernel needs blocking, and that would be a different
-comparison.
+**Blocking stops at one dimension.** `neon_sdot_m4` blocks M by four and that is
+the whole of it. Nothing blocks N or K, nothing packs either operand, and
+nothing tiles for a cache level. A real inference kernel does all of those, so
+the 72.7% of peak below is not a claim about how close this is to a production
+GEMM.
 
 **B is stored transposed** as N rows of K, so every kernel walks both operands
 contiguously. Comparing kernels that disagree about layout would measure the
