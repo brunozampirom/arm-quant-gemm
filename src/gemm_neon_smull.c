@@ -1,4 +1,5 @@
 #include <arm_neon.h>
+#include <stddef.h>
 
 #include "gemm.h"
 

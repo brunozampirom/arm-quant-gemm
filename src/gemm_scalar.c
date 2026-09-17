@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #include "gemm.h"
 
 // Compiled twice: once with vectorization off as gemm_scalar, once with it on
