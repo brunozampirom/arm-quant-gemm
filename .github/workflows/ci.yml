@@ -33,13 +33,19 @@ jobs:
         run: |
           set -eu
           OD=aarch64-linux-gnu-objdump
-          simd=$($OD -d build/gemm_scalar.o | grep -cE 'v[0-9]+\.(16b|8h|4s|8b)' || true)
+          vec='v[0-9]+\.(16b|8h|4s|8b)'
+          simd=$($OD -d build/gemm_scalar.o | grep -cE "$vec" || true)
+          qsimd=$($OD -d build/gemm_quant.o | grep -cE "$vec" || true)
           leaked=$($OD -d build/gemm_neon_smull.o | grep -cw sdot || true)
           present=$($OD -d build/gemm_neon_sdot.o | grep -cw sdot || true)
-          echo "scalar SIMD=$simd  sdot leaked into smull=$leaked  sdot present=$present"
+          qpresent=$($OD -d build/gemm_quant_neon.o | grep -cw sdot || true)
+          echo "scalar SIMD=$simd  quant reference SIMD=$qsimd"
+          echo "sdot leaked into smull=$leaked  present=$present  quant=$qpresent"
           test "$simd" -eq 0
+          test "$qsimd" -eq 0
           test "$leaked" -eq 0
           test "$present" -gt 0
+          test "$qpresent" -gt 0
 
       # QEMU_CPU=max turns on the ARMv8.2 dot product extension, so the sdot
       # kernels are checked rather than skipped.
