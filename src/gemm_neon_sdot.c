@@ -32,14 +32,11 @@ void gemm_neon_sdot(const int8_t *a, const int8_t *b, int32_t *c,
 
 /// Four independent accumulators, 64 bytes per iteration.
 ///
-/// This helps the wide out-of-order A78 (1.69x) far more than the narrow
-/// in-order A55 (1.19x), which is the opposite of the intuition that in-order
-/// cores need the hand-holding. The likely reason is that the payoff tracks
-/// each core's sdot latency-to-throughput ratio rather than its issue order:
-/// the A78 can retire enough sdots per cycle that one accumulator leaves it
-/// waiting on that accumulator's latency, while the A55's narrower NEON unit
-/// is closer to throughput-bound already. Measured, not verified against
-/// vendor pipeline documentation.
+/// Helps the out-of-order A78 (1.73x) far more than the in-order A55 (1.11x),
+/// which is backwards from the intuition that in-order cores need the
+/// hand-holding. The reason is sdot throughput, not issue order: one chain
+/// issues at most one sdot per cycle, already all the A55 can start, while
+/// the A78 can start two.
 void gemm_neon_sdot_x4(const int8_t *a, const int8_t *b, int32_t *c,
                        int M, int N, int K) {
     const int k64 = K & ~63;
@@ -69,11 +66,10 @@ void gemm_neon_sdot_x4(const int8_t *a, const int8_t *b, int32_t *c,
 /// Four rows of A against one vector of B, so each B load feeds four sdots
 /// instead of one.
 ///
-/// The x4 kernel above issues two loads per sdot and reuses nothing, which
-/// caps it at 1.5 sdot per cycle on a core that issues three vector loads and
-/// two sdots per cycle. Blocking M by four drops that to 1.25 loads per sdot,
-/// which puts the load ceiling above the arithmetic one and hands the limit
-/// back to the dot product unit.
+/// Drops loads per sdot from 2.00 to 1.25, and gains 1.46x on the A78 and
+/// 1.74x on the A55. What stays constant between the two kernels is bytes per
+/// cycle, not sdots per cycle, so this does not hand the limit back to the dot
+/// product unit: the A78 lands at 72.7% of peak, still bound by delivery.
 ///
 /// The four accumulators are four different output cells rather than four
 /// partial sums of one, so they are independent for the same reason.

@@ -88,8 +88,8 @@ one cycle. What differs is how many dot products each can start per cycle:
 One accumulator issues at most one dot product per cycle, because the next one
 waits a cycle for the forwarded accumulator. On the A55 that already matches
 what the core can start, so a second chain has nowhere to go and the gain is
-1.16x. On the A78 it leaves half the machine idle, and independent chains
-collect the rest: 1.76x measured against 2x available.
+1.11x. On the A78 it leaves half the machine idle, and independent chains
+collect the rest: 1.73x measured against 2x available.
 
 The A55 number carries a footnote that is easy to miss. Its table lists a
 throughput of 2, but note 1 says the Q-form, which is the 128-bit form these
