@@ -6,11 +6,15 @@
 
 /// The vector form of quant_rdpot.
 ///
-/// vrshlq_s32 rounds a tie up; gemmlowp rounds it away from zero. They agree
-/// on every positive value and disagree on the negative ones that land exactly
-/// on a tie, so the obvious one instruction translation is wrong in a way that
-/// random test data finds only sometimes. The fixup subtracts one from the
-/// negative lanes first, which is what makes the two definitions meet.
+/// vrshlq_s32 rounds a tie up; gemmlowp rounds it away from zero. They agree on
+/// every positive value and disagree on the negative ones landing exactly on a
+/// tie, so translating RoundingDivideByPOT to the one instruction that looks
+/// like it is wrong. The fixup nudges the negative lanes down first, which is
+/// what makes the two definitions meet.
+///
+/// Removing it makes this kernel disagree with the scalar reference on the
+/// benchmark's own data, while the scalar epilogue next door stays correct.
+/// That is the check working, and it is how this was found.
 static inline int32x4_t requant_shift(int32x4_t x, int32x4_t neg_shift) {
     const int32x4_t fixup = vshrq_n_s32(vandq_s32(x, neg_shift), 31);
     return vrshlq_s32(vqaddq_s32(x, fixup), neg_shift);
