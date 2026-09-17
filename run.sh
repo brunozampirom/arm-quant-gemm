@@ -84,6 +84,23 @@ sustained_run() {
     tail -1 "$OUT/sustained_$label.csv"
 }
 
+# What the requantization epilogue costs, swept over K.
+#
+# The epilogue is one pass over the output, so its cost per output is fixed
+# while the matmul feeding it grows with K. Reading it at one K would measure
+# the K rather than the epilogue.
+echo
+echo "== requantization, big core (cpu$BIG) =="
+echo "K,kernel,gops" > "$OUT/requant_sweep.csv"
+for k in 1024 512 256 128 64 32; do
+    for kern in neon_sdot_m4 q_sdot_m4 q_sdot_m4_se; do
+        line=$(adb shell "$DEV" --cpu "$BIG" -K "$k" --only "$kern" --csv | tr -d '\r' | grep "^$kern,")
+        [ -n "$line" ] || continue
+        echo "$k,$kern,$(echo "$line" | cut -d, -f7)" >> "$OUT/requant_sweep.csv"
+    done
+done
+column -s, -t "$OUT/requant_sweep.csv" 2>/dev/null || cat "$OUT/requant_sweep.csv"
+
 sustained_run single "$BIG"
 sustained_run big "$BIG_CLUSTER"
 sustained_run all "$ALL_CPUS"
