@@ -1,0 +1,7 @@
+M=64 N=64 K=1024 reps=50 cpu=0 dotprod=yes peak=2002000 kHz
+scalar         median  10.663 ms  p10  10.632  p90  10.755    0.79 GOP/s  spread  1.2%  kept 46/50  (preempt 4, dvfs 0, slow 0)
+auto_vec       median   1.493 ms  p10   1.477  p90   1.521    5.62 GOP/s  spread  3.0%  kept 39/50  (preempt 11, dvfs 0, slow 0)
+neon_smull     median   1.753 ms  p10   1.751  p90   1.782    4.78 GOP/s  spread  1.7%  kept 46/50  (preempt 4, dvfs 0, slow 0)
+neon_smull_x4  median   1.456 ms  p10   1.454  p90   1.486    5.76 GOP/s  spread  2.2%  kept 43/50  (preempt 7, dvfs 0, slow 0)
+neon_sdot      median   1.044 ms  p10   1.041  p90   1.049    8.03 GOP/s  spread  0.8%  kept 35/50  (preempt 15, dvfs 0, slow 0)
+neon_sdot_x4   median   0.901 ms  p10   0.899  p90   0.902    9.31 GOP/s  spread  0.3%  kept 39/50  (preempt 11, dvfs 0, slow 0)
