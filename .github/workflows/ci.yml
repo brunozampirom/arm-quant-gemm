@@ -67,3 +67,12 @@ jobs:
             LC_ALL=pt_BR.UTF-8 sh analyze.sh "$f" > /tmp/br.txt
             diff /tmp/c.txt /tmp/br.txt || { echo "error: $f summarises differently under a comma locale"; exit 1; }
           done
+
+      # A chart that disagrees with the table is worse than no chart. It is
+      # generated from the same CSVs, so regenerate it and require the
+      # committed file to match byte for byte.
+      - name: Assert the chart still matches the data
+        run: |
+          set -eu
+          sh plot.sh results/sustained_single.csv results/sustained_big.csv results/sustained_all.csv > /tmp/sustained.svg
+          diff docs/sustained.svg /tmp/sustained.svg || { echo "error: docs/sustained.svg is stale; rerun plot.sh"; exit 1; }
