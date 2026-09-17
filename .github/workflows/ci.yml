@@ -25,6 +25,22 @@ jobs:
           CC: aarch64-linux-gnu-gcc
         run: sh build.sh
 
+      # The README's whole argument rests on the baseline being genuinely
+      # scalar and on dot product living only in the kernel that claims it.
+      # Both are properties of the emitted code, so assert them there instead
+      # of trusting that the flags did what they were meant to.
+      - name: Assert the baseline is scalar and sdot is contained
+        run: |
+          set -eu
+          OD=aarch64-linux-gnu-objdump
+          simd=$($OD -d build/gemm_scalar.o | grep -cE 'v[0-9]+\.(16b|8h|4s|8b)' || true)
+          leaked=$($OD -d build/gemm_neon_smull.o | grep -cw sdot || true)
+          present=$($OD -d build/gemm_neon_sdot.o | grep -cw sdot || true)
+          echo "scalar SIMD=$simd  sdot leaked into smull=$leaked  sdot present=$present"
+          test "$simd" -eq 0
+          test "$leaked" -eq 0
+          test "$present" -gt 0
+
       # QEMU_CPU=max turns on the ARMv8.2 dot product extension, so the sdot
       # kernels are checked rather than skipped.
       - name: Check every kernel against the reference

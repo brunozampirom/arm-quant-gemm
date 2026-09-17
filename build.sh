@@ -38,7 +38,13 @@ OUT=build
 mkdir -p "$OUT"
 
 COMMON="-O3 -Wall -Wextra -Isrc -pthread"
-NOVEC="-fno-vectorize -fno-slp-vectorize"
+# Turning the vectorizer off is spelled differently by each compiler, and
+# getting it wrong silently gives you a "scalar" baseline full of SIMD.
+if "$CC" --version 2>&1 | grep -qi clang; then
+    NOVEC="-fno-vectorize -fno-slp-vectorize"
+else
+    NOVEC="-fno-tree-vectorize -fno-tree-slp-vectorize"
+fi
 BASE="-march=armv8.2-a"
 DOT="-march=armv8.2-a+dotprod"
 
