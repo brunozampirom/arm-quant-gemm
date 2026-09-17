@@ -219,9 +219,11 @@ throughput at K=1024 and 46% at K=32.
 A benchmark that stops at int32 quotes the left column for a model that only
 ever sees one of the others.
 
-**Vectorizing the epilogue is worth more the smaller K gets**, for the same
-reason: 1.6x at K=1024 against 3.8x at K=32, because what it saves is fixed
-while what it is measured against shrinks.
+**Vectorizing the epilogue is worth more the smaller K gets**: 1.6x at K=1024
+against 3.8x at K=32. That one is not the fixed cost again. The scalar epilogue
+holds nearly flat across the sweep, 4.34 down to 3.78 ns, while the vector one
+falls to a third, 2.66 down to 1.00, and a measured cost that moves like that is
+what the next paragraph is about.
 
 The fixed cost model is exact on the little core and only roughly true on the
 big one:
@@ -231,7 +233,8 @@ big one:
 | A55, in-order | 18.5 to 19.6 | 3.9 to 5.1 |
 | A78, out-of-order | 3.8 to 4.4 | 1.0 to 2.7 |
 
-The A55 numbers barely move and vectorizing buys 4.1x, which is the lane count.
+The A55 numbers barely move and vectorizing buys 3.9x to 4.7x, which is the lane
+count.
 On the A78 the vector epilogue's apparent cost more than halves between K=1024
 and K=32, and a fixed cost cannot do that. The subtraction is what breaks, not
 the kernel: an out-of-order core overlaps the epilogue with the matmul ahead of
@@ -239,9 +242,10 @@ it, so the two times do not simply add. Where they do add, in order, the model
 holds.
 
 One result that reads backwards. Quantizing costs *less* on the slower core at
-large K: 3.7% on the A55 against 12.4% on the A78 at K=1024. The A55 epilogue is
-about five times more expensive in absolute terms, its matmul is seven times
-slower, and only the ratio reaches the output.
+large K: 3.7% on the A55 against 12.4% on the A78 at K=1024. Both of those are
+the vector epilogue, which is about twice as expensive on the A55 in absolute
+terms, 5.05 ns against 2.66. Its matmul is seven times slower, and only the
+ratio reaches the output.
 
 ## Correctness of the epilogue
 
