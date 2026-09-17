@@ -87,19 +87,34 @@ sustained_run() {
 # What the requantization epilogue costs, swept over K.
 #
 # The epilogue is one pass over the output, so its cost per output is fixed
-# while the matmul feeding it grows with K. Reading it at one K would measure
+# while the matmul feeding it grows with K. Reading it at one K would report
 # the K rather than the epilogue.
+#
+# The repetition count is not the default and cannot be. One fast kernel on its
+# own finishes in a few milliseconds, the governor never leaves idle, and the
+# downclock filter throws every repetition away: at 50 it keeps 3 of 50 and
+# prints no result. Scaling by K also keeps the work per column comparable.
+requant_sweep() {
+    cpu=$1
+    out=$2
+    echo "K,kernel,gops,ms,kept,total" > "$out"
+    for k in 1024 512 256 128 64 32; do
+        reps=$((5000 * 1024 / k))
+        for kern in neon_sdot_m4 q_sdot_m4_se q_sdot_m4; do
+            l=$(adb shell "$DEV" --cpu "$cpu" -K "$k" --reps "$reps" --only "$kern" --csv                 | tr -d '\r' | grep "^$kern,")
+            [ -n "$l" ] || { echo "$k,$kern,,,," >> "$out"; continue; }
+            echo "$k,$kern,$(echo "$l" | cut -d, -f7),$(echo "$l" | cut -d, -f5),$(echo "$l" | cut -d, -f2),$(echo "$l" | cut -d, -f3)" >> "$out"
+        done
+    done
+    column -s, -t "$out" 2>/dev/null || cat "$out"
+}
+
 echo
 echo "== requantization, big core (cpu$BIG) =="
-echo "K,kernel,gops" > "$OUT/requant_sweep.csv"
-for k in 1024 512 256 128 64 32; do
-    for kern in neon_sdot_m4 q_sdot_m4 q_sdot_m4_se; do
-        line=$(adb shell "$DEV" --cpu "$BIG" -K "$k" --only "$kern" --csv | tr -d '\r' | grep "^$kern,")
-        [ -n "$line" ] || continue
-        echo "$k,$kern,$(echo "$line" | cut -d, -f7)" >> "$OUT/requant_sweep.csv"
-    done
-done
-column -s, -t "$OUT/requant_sweep.csv" 2>/dev/null || cat "$OUT/requant_sweep.csv"
+requant_sweep "$BIG" "$OUT/requant_a78.csv"
+echo
+echo "== requantization, little core (cpu$LITTLE) =="
+requant_sweep "$LITTLE" "$OUT/requant_a55.csv"
 
 sustained_run single "$BIG"
 sustained_run big "$BIG_CLUSTER"
